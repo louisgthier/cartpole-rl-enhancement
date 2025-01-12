@@ -20,7 +20,7 @@ import src.config as config
 from src.normalization import NormalizedEnv
 
 # Hyperparameters
-MAX_STEPS = 200000  # For instance, one million steps as a target
+MAX_STEPS = 100000  # For instance, one million steps as a target
 BATCH_SIZE = 64
 GAMMA = 0.95
 EPS_START = 0.5
@@ -34,6 +34,8 @@ BACKUP_INTERVAL = 5000
 DETERMINISTIC_ACTIONS = False
 USE_PRIORITIZATION = False
 EVAL_INTERVAL = 2000
+CURRICULUM_LEARNING = True
+CURRICULUM_STEPS = [20000, 50000]  # Steps to change curriculum weights
 
 # Map model names to classes
 MODEL_MAP = {
@@ -74,7 +76,7 @@ def single_eval_episode(policy_net_state_dict, device):
         state = next_state
     avg_energy_used = energy_used / steps
     eval_env.close()
-    return episode_reward, avg_energy_used
+    return episode_reward, avg_energy_used, steps
 
 def evaluate_policy(policy_net, n_eval_episodes=5):
     """Evaluate the current policy without exploration using multiprocessing if enabled."""
@@ -92,16 +94,18 @@ def evaluate_policy(policy_net, n_eval_episodes=5):
         results = [single_eval_episode(policy_net_state_dict, device) for _ in range(n_eval_episodes)]
     
     # Separate rewards and energy usage
-    total_rewards, total_energy_used = zip(*results)
+    total_rewards, total_energy_used, steps = zip(*results)
     
     avg_reward = np.mean(total_rewards)
     avg_energy_used = np.mean(total_energy_used)
+    avg_steps = np.mean(steps)
     
     # Log aggregated values to TensorBoard
-    tb_writer.add_scalar("Eval/AvgReward", avg_reward, steps_done)
-    tb_writer.add_scalar("Eval/AvgEnergyUsedPerStep", avg_energy_used, steps_done)
+    tb_writer.add_scalar("Eval/Avg Reward Per Episode", avg_reward, steps_done)
+    tb_writer.add_scalar("Eval/Avg Energy Used Per Step", avg_energy_used, steps_done)
+    tb_writer.add_scalar("Eval/Avg Steps Per Episode", avg_steps, steps_done)
     
-    print(f"Evaluation took {time.time() - t:.2f} seconds. Avg Reward: {avg_reward:.3f}, Avg Energy Used: {avg_energy_used:.4f}")
+    print(f"Evaluation took {time.time() - t:.2f} seconds. Avg Reward: {avg_reward:.3f}, Avg Energy Used: {avg_energy_used:.4f}, Avg Steps: {avg_steps:.2f}")
     
     return avg_reward
 
@@ -233,6 +237,25 @@ def train_model(run_id: int = None, resume: bool = False):
     try:
         episode = start_episode
         while steps_done < MAX_STEPS:
+            # Update curriculum weights based on current step count
+            if CURRICULUM_LEARNING:
+                if steps_done < CURRICULUM_STEPS[0]:
+                    env.alive_weight = 0.5
+                    env.pole_weight = 0.5
+                    env.distance_weight = 0.0
+                    env.energy_weight = 0.0
+                elif steps_done < CURRICULUM_STEPS[1]:
+                    env.alive_weight = 1/3
+                    env.pole_weight = 1/3
+                    env.distance_weight = 1/3
+                    env.energy_weight = 0.0
+                else:
+                    env.alive_weight = 0.25
+                    env.pole_weight = 0.25
+                    env.distance_weight = 0.25
+                    env.energy_weight = 0.25
+            
+            
             state, _ = env.reset(seed=random.randint(0, 100000))
             total_reward = 0
             total_energy_used = 0
@@ -241,6 +264,13 @@ def train_model(run_id: int = None, resume: bool = False):
                 next_state, reward, done, _, info = env.step(action)
                 total_reward += reward
                 total_energy_used += info.get("energy_used", 0)
+                
+                # Log sub-rewards/penalties to TensorBoard for each step or aggregate them per episode
+                tb_writer.add_scalar("Reward/Alive Reward Per Step", info.get("alive_reward", 0), steps_done)
+                tb_writer.add_scalar("Reward/Distance Reward Per Step", info.get("distance_reward", 0), steps_done)
+                tb_writer.add_scalar("Reward/Energy Reward Per Step", info.get("energy_reward", 0), steps_done)
+                tb_writer.add_scalar("Reward/Pole Angle Reward Per Step", info.get("pole_angle_reward", 0), steps_done)
+                tb_writer.add_scalar("Reward/Reward Per Step", reward, steps_done)
                 
                 # memory.push(state, action, reward, next_state, done)
                 memory.add((
@@ -276,17 +306,16 @@ def train_model(run_id: int = None, resume: bool = False):
 
                 # Periodic Evaluation
                 if steps_done % EVAL_INTERVAL == 0:
-                    avg_reward = evaluate_policy(policy_net, n_eval_episodes=5)
-                    print(f"Evaluation at step {steps_done}: Avg Reward = {avg_reward:.3f}")
+                    evaluate_policy(policy_net, n_eval_episodes=5)
                     
                 if done:
                     break
                 
 
             avg_energy_used = total_energy_used / t
-            tb_writer.add_scalar("Info/Reward", total_reward, steps_done)
+            tb_writer.add_scalar("Info/Reward Per Episode", total_reward, steps_done)
             tb_writer.add_scalar("Info/Epsilon Threshold", current_epsilon_threshold(steps_done), steps_done)
-            tb_writer.add_scalar("Info/AvgEnergyUsedPerStep", avg_energy_used, steps_done)  # Log average energy used
+            tb_writer.add_scalar("Info/Avg Energy Used Per Step", avg_energy_used, steps_done)  # Log average energy used
 
             print(f"Episode {episode}, Total Reward: {total_reward:.3f}, Steps: {t}, Total steps: {steps_done}, Epsilon threshold: {current_epsilon_threshold(steps_done):.4f}")
             
