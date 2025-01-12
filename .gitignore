@@ -169,3 +169,11 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Ignore instructions PDF
+*_test.pdf
+repomix-output.txt
+
+/runs/
+/experiments/
+/backups/
