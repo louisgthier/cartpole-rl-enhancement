@@ -3,14 +3,26 @@ import torch
 import numpy as np
 
 from src.modified_cartpole import ModifiedCartPoleEnv
-from src.dqn_model import DQN
+from src.normalization import NormalizedEnv
+from src.dqn_model import DQN, DuelingDQN
+import src.config as config
+
+# Map model names to classes
+MODEL_MAP = {
+    "DQN": DQN,
+    "DuelingDQN": DuelingDQN
+}
+
+model_cass = MODEL_MAP[config.MODEL_TYPE]
 
 def evaluate_model(model_path: str):
-    env = ModifiedCartPoleEnv(render_mode="human")
+    base_env = ModifiedCartPoleEnv(render_mode="human")
+    env = NormalizedEnv(base_env)  # Wrap environment with normalization
+    
     state_dim = env.observation_space.shape[0]
     n_actions = env.action_space.n
 
-    policy_net = DQN(state_dim, n_actions)
+    policy_net = model_cass(state_dim, n_actions)
 
     # Load the file and check if it's a checkpoint
     loaded = torch.load(model_path, map_location=torch.device("cpu"))

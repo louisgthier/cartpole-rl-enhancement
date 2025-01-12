@@ -11,14 +11,20 @@ torch.manual_seed(SEED)
 class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(DQN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, output_dim)
-
+        
+        hidden_units = 32
+        hidden_layers = 2
+        
+        self.fc = nn.ModuleList(
+            [nn.Linear(input_dim, hidden_units)] +
+            [nn.Linear(hidden_units, hidden_units) for _ in range(hidden_layers - 1)] +
+            [nn.Linear(hidden_units, output_dim)]
+        )
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        for layer in self.fc[:-1]:
+            x = F.relu(layer(x))
+        x = self.fc[-1](x)
+        return x
     
     def save(self, path):
         torch.save(self.state_dict(), path)

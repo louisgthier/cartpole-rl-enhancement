@@ -13,40 +13,51 @@ from src.modified_cartpole import ModifiedCartPoleEnv
 from src.dqn_model import DQN, DuelingDQN
 from src.replay_buffer import ReplayBuffer
 from src.config import SEED
+import src.config as config
+from src.normalization import NormalizedEnv
 
 # Hyperparameters
-MAX_STEPS = 100000  # For instance, one million steps as a target
-BATCH_SIZE = 512
+MAX_STEPS = 200000  # For instance, one million steps as a target
+BATCH_SIZE = 64
 GAMMA = 0.95
-EPS_START = 0.2
+EPS_START = 0.5
 EPS_END = 0.2
 EPS_DECAY = 10000
 TARGET_UPDATE = 1000
 LEARNING_RATE = 2.5e-4
-MEMORY_CAPACITY = BATCH_SIZE * 200
+MEMORY_CAPACITY = 10000
 MAX_EPISODE_LENGTH = 1000
 BACKUP_INTERVAL = 5000
-DETERMINISTIC_ACTIONS = True
+DETERMINISTIC_ACTIONS = False
+USE_PRIORITIZATION = False
+
+# Map model names to classes
+MODEL_MAP = {
+    "DQN": DQN,
+    "DuelingDQN": DuelingDQN
+}
+model_class = MODEL_MAP[config.MODEL_TYPE]
 
 # Define checkpoint path
 CHECKPOINT_PATH = "experiments/saved_models/checkpoint.pth"
 
 device = torch.device("mps" if torch.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
 def train_model(run_id: int = None, resume: bool = False):
-    env = ModifiedCartPoleEnv()
+    base_env = ModifiedCartPoleEnv()
+    env = NormalizedEnv(base_env)
+    
     n_actions = env.action_space.n
     state_dim = env.observation_space.shape[0]
 
-    policy_net = DQN(state_dim, n_actions).to(device)
-    target_net = DQN(state_dim, n_actions).to(device)
+    policy_net = model_class(state_dim, n_actions).to(device)
+    target_net = model_class(state_dim, n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1 - min(step, MAX_STEPS) / MAX_STEPS)
+    optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE) # weight_decay=1e-4
 
     # memory = ReplayBuffer(MEMORY_CAPACITY)
-    memory = PrioritizedReplayBuffer(alpha=0.6, beta=0.4, storage=ListStorage(MEMORY_CAPACITY))
+    memory = PrioritizedReplayBuffer(alpha=0.6 if USE_PRIORITIZATION else 0, beta=0.4 if USE_PRIORITIZATION else 1, storage=ListStorage(MEMORY_CAPACITY)) # alpha=0.6, beta=0.4
 
     steps_done = 0
     start_episode = 0
@@ -70,8 +81,13 @@ def train_model(run_id: int = None, resume: bool = False):
         optimizer.load_state_dict(checkpoint['optimizer_state'])
         steps_done = checkpoint['steps_done']
         start_episode = checkpoint['episode'] + 1
+        
+        # Reinitialize the scheduler and load its state
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1 - min(step, MAX_STEPS) / MAX_STEPS)
+        scheduler.load_state_dict(checkpoint['scheduler_state'])
     else:
         print("Starting fresh training.")
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1 - min(step, MAX_STEPS) / MAX_STEPS)
 
     def current_epsilon_threshold(steps_done):
         return EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
@@ -118,12 +134,18 @@ def train_model(run_id: int = None, resume: bool = False):
         batch_indices = info['index']
 
         state_action_values = policy_net(state_batch).gather(1, action_batch)
-        next_state_values = target_net(next_state_batch).max(1)[0].detach().unsqueeze(1)
+        # next_state_values = target_net(next_state_batch).max(1)[0].detach().unsqueeze(1)
+        
+        # Double DQN
+        next_state_actions = policy_net(next_state_batch).max(1)[1].unsqueeze(1)
+        next_state_values = target_net(next_state_batch).gather(1, next_state_actions).detach()
+        
         expected_state_action_values = reward_batch + (GAMMA * next_state_values * (1 - done_batch))
         
         # Compute TD errors
         td_errors = (state_action_values - expected_state_action_values).pow(2).detach().cpu().numpy().flatten()
-            # Update priorities in the replay buffer
+        
+        # Update priorities in the replay buffer
         new_priorities = td_errors + 1e-6  # Add a small constant to avoid zero priority
         memory.update_priority(batch_indices, new_priorities)
 
@@ -135,6 +157,7 @@ def train_model(run_id: int = None, resume: bool = False):
 
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=1.0) # Clip gradients
         optimizer.step()
         scheduler.step()
         
@@ -173,6 +196,7 @@ def train_model(run_id: int = None, resume: bool = False):
                         'target_state': target_net.state_dict(),
                         'optimizer_state': optimizer.state_dict(),
                         'steps_done': steps_done,
+                        'scheduler_state': scheduler.state_dict(),
                         'episode': episode,
                     }
                     os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
@@ -185,7 +209,7 @@ def train_model(run_id: int = None, resume: bool = False):
                 if done:
                     break
 
-            print(f"Episode {episode}, Total Reward: {total_reward}, Steps: {t}, Total steps: {steps_done}, Epsilon threshold: {current_epsilon_threshold(steps_done):.4f}")
+            print(f"Episode {episode}, Total Reward: {total_reward:.3f}, Steps: {t}, Total steps: {steps_done}, Epsilon threshold: {current_epsilon_threshold(steps_done):.4f}")
             tb_writer.add_scalar("Info/Reward", total_reward, steps_done)
             tb_writer.add_scalar("Info/Epsilon Threshold", current_epsilon_threshold(steps_done), steps_done)
             
@@ -197,6 +221,7 @@ def train_model(run_id: int = None, resume: bool = False):
             'target_state': target_net.state_dict(),
             'optimizer_state': optimizer.state_dict(),
             'steps_done': steps_done,
+            'scheduler_state': scheduler.state_dict(),
             'episode': episode,  # The last completed episode before interruption
         }
         os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
