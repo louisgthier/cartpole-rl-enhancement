@@ -41,7 +41,6 @@ The project was broken down into the following tasks:
    - Possible extensions.
    - Potential shortcomings.
 4. **Task 4 (Bonus):** Propose and, optionally, implement a new reward function reflecting energy/effort consumption, and analyze its effects.
-5. **Curriculum Learning & Temperature Scheduling:** Adjust rewards dynamically based on training phases and use temperature-scaled softmax to balance exploration and exploitation.
 
 ## Environment Description
 
@@ -68,6 +67,8 @@ For the deep RL solution, the approach involves:
 - Using a temperature-scaled softmax with a linearly decaying temperature for exploration.
 - Utilizing a prioritized replay buffer for efficient sampling and training.
 - Logging performance metrics and reward components using TensorBoard.
+- Scheduling evaluation episodes to monitor agent performance and generalization.
+- Modifying the reward structure to include energy usage or effort expended by the agent.
 
 **Note:** While a specific algorithm is used in this repository, the approach is flexible. Other algorithms like PPO, A3C, or custom variants can be substituted depending on preferences and requirements.
 
@@ -142,22 +143,27 @@ Replace `experiments/saved_models/checkpoint.pth` with the path to the saved mod
 
 ## Results and Analysis
 
-After training:
+After 100k training steps using the equally weighted reward structure (alive, distance to center, pole angle, and energy usage):
 
-- The agent's performance metrics (e.g., episode lengths, rewards, energy usage) are logged using TensorBoard.
-- The curriculum learning strategy and temperature scheduling influence the learning progression.
-- Analysis includes how the three actions, dynamic rewards, and exploration strategies affect performance and stability.
-- (If bonus was attempted) Comparison of training results before and after modifying the reward to account for energy usage.
+- The agent achieved an average reward of 975/1000, indicating near-optimal balancing performance.
+- Energy consumption decreased to less than 0.4 per step (full power is 10 per step), demonstrating efficient energy usage.
+- The agent reached a 100% success rate during evaluation (1000/1000 steps for every episode), with no failures and potentially infinite episodes.
+- Evaluations were conducted every 2k steps, providing a robust monitoring mechanism to assess performance improvements despite off-policy learning, non-deterministic actions, and exploration noise.
+
+Through analysis, it was observed that while prioritized experience replay helped stabilize loss, it did not significantly improve overall performance compared to uniform sampling.
 
 ## Extensions and Future Work
 
 Potential extensions to this project include:
 
 - Experimenting with other RL algorithms and comparing their performance.
+- Implementing stratified sampling or a distribution-aware buffer, potentially using VAEs.
 - Further refining the reward function to incorporate other factors like smoothness of action or energy efficiency.
 - Expanding the environment (e.g., adding obstacles, varying physics parameters).
 - Hyperparameter tuning for improved performance and stability.
-- Refining curriculum learning schedules and exploration strategies.
+- Increasing the number of parallel environments to 16 for faster experience collection.
+- Keeping best results or multiple checkpoints for robust evaluation.
+- Scheduling pole angle and distance to center rewards to decrease over time to focus on energy optimization.
 
 ## Shortcomings
 
@@ -168,3 +174,4 @@ Possible shortcomings of the current solution:
 - The "do nothing" action’s usefulness is highly dependent on reward structure and environment dynamics; further adjustments may be needed.
 - Computational resources and time required for training deep RL models can be significant.
 - The curriculum learning and temperature scheduling parameters may need further tuning for optimal performance.
+- Prioritization improved loss stability but did not enhance overall performance significantly.
