@@ -8,7 +8,10 @@ import os
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import lr_scheduler
 from torchrl.data import PrioritizedReplayBuffer, ListStorage
+from multiprocessing import Pool
+import time
 
+# Local imports
 from src.modified_cartpole import ModifiedCartPoleEnv
 from src.dqn_model import DQN, DuelingDQN
 from src.replay_buffer import ReplayBuffer
@@ -21,7 +24,7 @@ MAX_STEPS = 200000  # For instance, one million steps as a target
 BATCH_SIZE = 64
 GAMMA = 0.95
 EPS_START = 0.5
-EPS_END = 0.2
+EPS_END = 0.05
 EPS_DECAY = 10000
 TARGET_UPDATE = 1000
 LEARNING_RATE = 2.5e-4
@@ -30,6 +33,7 @@ MAX_EPISODE_LENGTH = 1000
 BACKUP_INTERVAL = 5000
 DETERMINISTIC_ACTIONS = False
 USE_PRIORITIZATION = False
+EVAL_INTERVAL = 2000
 
 # Map model names to classes
 MODEL_MAP = {
@@ -42,6 +46,54 @@ model_class = MODEL_MAP[config.MODEL_TYPE]
 CHECKPOINT_PATH = "experiments/saved_models/checkpoint.pth"
 
 device = torch.device("mps" if torch.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+
+def single_eval_episode(policy_net_state_dict, device):
+    """Run a single evaluation episode and return the total reward."""
+    eval_env = NormalizedEnv(ModifiedCartPoleEnv())
+    
+    # Recreate the policy network in each process
+    policy_net = model_class(eval_env.observation_space.shape[0], eval_env.action_space.n).to(device)
+    policy_net.load_state_dict(policy_net_state_dict)
+    policy_net.eval()
+    
+    state, _ = eval_env.reset()
+    done = False
+    episode_reward = 0
+    steps = 0
+    while not done and steps < MAX_EPISODE_LENGTH:
+        with torch.no_grad():
+            state_tensor = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+            action = policy_net(state_tensor).max(1)[1].item()  # Greedy action
+        next_state, reward, done, _, _ = eval_env.step(action)
+        steps += 1
+        episode_reward += reward
+        state = next_state
+    eval_env.close()
+    return episode_reward
+
+def evaluate_policy(policy_net, n_eval_episodes=5):
+    """Evaluate the current policy without exploration using multiprocessing if enabled."""
+    
+    # Move policy net state dict to CPU before sharing across processes
+    policy_net_state_dict = {k: v.cpu() for k, v in policy_net.state_dict().items()}
+    
+    t = time.time()
+    
+    if config.MULTITHREAD_EVAL:
+        with Pool(processes=n_eval_episodes) as pool:
+            # Each process runs a single evaluation episode
+            results = pool.starmap(single_eval_episode, [(policy_net_state_dict, device) for _ in range(n_eval_episodes)])
+        avg_reward = np.mean(results)
+    else:
+        total_rewards = []
+        for _ in range(n_eval_episodes):
+            total_rewards.append(single_eval_episode(policy_net_state_dict, device))
+        avg_reward = np.mean(total_rewards)
+        
+    print(f"Evaluation took {time.time() - t:.2f} seconds.")
+
+    return avg_reward
+
 def train_model(run_id: int = None, resume: bool = False):
     base_env = ModifiedCartPoleEnv()
     env = NormalizedEnv(base_env)
@@ -208,6 +260,12 @@ def train_model(run_id: int = None, resume: bool = False):
 
                 if done:
                     break
+                
+                # Periodic Evaluation
+                if steps_done % EVAL_INTERVAL == 0:
+                    avg_reward = evaluate_policy(policy_net, n_eval_episodes=5)
+                    tb_writer.add_scalar("Eval/AvgReward", avg_reward, steps_done)
+                    print(f"Evaluation at step {steps_done}: Avg Reward = {avg_reward:.3f}")
 
             print(f"Episode {episode}, Total Reward: {total_reward:.3f}, Steps: {t}, Total steps: {steps_done}, Epsilon threshold: {current_epsilon_threshold(steps_done):.4f}")
             tb_writer.add_scalar("Info/Reward", total_reward, steps_done)

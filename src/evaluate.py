@@ -38,13 +38,19 @@ def evaluate_model(model_path: str):
     done = False
     total_reward = 0
 
+    steps = 0
+    
     while not done:
         with torch.no_grad():
             state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
             action = policy_net(state_tensor).max(1)[1].item()
         next_state, reward, done, _, _ = env.step(action)
+        steps += 1
         total_reward += reward
         state = next_state
+        
+        if steps % 100 == 0:
+            print(f"Total Reward: {total_reward}, Steps: {steps}")
 
-    print(f"Total Reward: {total_reward}")
+    print(f"Total Reward: {total_reward}, Steps: {steps}")
     env.close()

@@ -53,10 +53,22 @@ class ModifiedCartPoleEnv(CartPoleEnv):
 
         if not terminated:
             # Old reward function
-            reward = 0.0 if self._sutton_barto_reward else 1.0
+            # reward = 0.0 if self._sutton_barto_reward else 1.0
             
             # Modification: add a reward to minimize the distance to the center
-            # reward = (4.8 - abs(x)) / 4.8
+            # Reward for keeping the pole vertical
+            pole_angle_penalty = abs(theta) / self.theta_threshold_radians  # Normalized penalty for pole angle
+
+            # Reward for staying close to the center (no penalty if within 0.5 units of center)
+            center_distance = abs(x)
+            if center_distance <= 0.5:
+                center_penalty = 0.0
+            else:
+                center_penalty = (center_distance - 0.5) / (self.x_threshold - 0.5)  # Normalized penalty beyond 0.5 units
+
+            # Combine penalties into a reward (negative penalties)
+            reward = 1.0 - (pole_angle_penalty + center_penalty)
+            reward = max(reward, 0.0)  # Ensure reward is non-negative
         elif self.steps_beyond_terminated is None:
             # Pole just fell!
             self.steps_beyond_terminated = 0
