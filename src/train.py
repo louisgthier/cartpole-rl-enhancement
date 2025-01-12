@@ -22,7 +22,7 @@ from src.normalization import NormalizedEnv
 # Hyperparameters
 MAX_STEPS = 100000  # For instance, one million steps as a target
 BATCH_SIZE = 64
-GAMMA = 0.95
+GAMMA = 0.99
 EPS_START = 0.5
 EPS_END = 0.05
 EPS_DECAY = 10000
@@ -36,6 +36,8 @@ USE_PRIORITIZATION = False
 EVAL_INTERVAL = 2000
 CURRICULUM_LEARNING = True
 CURRICULUM_STEPS = [20000, 50000]  # Steps to change curriculum weights
+INITIAL_TEMPERATURE = 1.0 # Temperature for action selection
+FINAL_TEMPERATURE = 0.1
 
 # Map model names to classes
 MODEL_MAP = {
@@ -165,6 +167,17 @@ def train_model(run_id: int = None, resume: bool = False):
         global steps_done
         eps_threshold = current_epsilon_threshold(steps_done)
         steps_done += 1
+        
+        # Calculate current temperature linearly decreasing from INITIAL_TEMPERATURE to FINAL_TEMPERATURE
+        temperature = max(
+            FINAL_TEMPERATURE,
+            INITIAL_TEMPERATURE - (INITIAL_TEMPERATURE - FINAL_TEMPERATURE) * (steps_done / MAX_STEPS)
+        )
+        
+        # Log temperature to TensorBoard
+        tb_writer.add_scalar("Info/Temperature", temperature, steps_done)
+    
+        
         if np.random.rand() < eps_threshold:
             return np.random.randint(n_actions)
         else:
@@ -175,7 +188,8 @@ def train_model(run_id: int = None, resume: bool = False):
                 if DETERMINISTIC_ACTIONS:
                     action = q_values.max(0)[1].item()
                 else:
-                    probabilities = torch.softmax(q_values, dim=0)
+                    # Use temperature-scaled softmax
+                    probabilities = torch.softmax(q_values / temperature, dim=0)
                     action = torch.multinomial(probabilities, 1).item()
                 
                 return action

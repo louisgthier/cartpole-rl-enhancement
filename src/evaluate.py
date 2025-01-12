@@ -40,11 +40,14 @@ def evaluate_model(model_path: str):
 
     steps = 0
     
+    action_counts = {0: 0, 1: 0, 2: 0}
+    
     total_energy_used = 0
     while not done:
         with torch.no_grad():
             state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
             action = policy_net(state_tensor).max(1)[1].item()
+            action_counts[action] += 1
         next_state, reward, done, _, info = env.step(action)
         total_energy_used += info["energy_used"]
         steps += 1
@@ -54,7 +57,8 @@ def evaluate_model(model_path: str):
         
         if steps % 100 == 0:
             avg_energy_used = total_energy_used / steps
-            print(f"Total Reward: {total_reward}, Steps: {steps}, Avg. Energy Used: {avg_energy_used}")
+            print(f"Cumulative Reward: {total_reward}, Steps: {steps}, Avg. Energy Used: {avg_energy_used}")
+            print(f"Action counts: {action_counts}")
 
-    print(f"Total Reward: {total_reward}, Steps: {steps}")
+    print(f"Final Reward: {total_reward}, Steps: {steps}, Avg. Energy Used: {total_energy_used / steps}")
     env.close()
