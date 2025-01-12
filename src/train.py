@@ -49,6 +49,8 @@ device = torch.device("mps" if torch.mps.is_available() else "cuda" if torch.cud
 
 def single_eval_episode(policy_net_state_dict, device):
     """Run a single evaluation episode and return the total reward."""
+    global steps_done, tb_writer
+    
     eval_env = NormalizedEnv(ModifiedCartPoleEnv())
     
     # Recreate the policy network in each process
@@ -60,16 +62,19 @@ def single_eval_episode(policy_net_state_dict, device):
     done = False
     episode_reward = 0
     steps = 0
+    energy_used = 0
     while not done and steps < MAX_EPISODE_LENGTH:
         with torch.no_grad():
             state_tensor = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
             action = policy_net(state_tensor).max(1)[1].item()  # Greedy action
-        next_state, reward, done, _, _ = eval_env.step(action)
+        next_state, reward, done, _, info = eval_env.step(action)
+        energy_used += info.get("energy_used", 0)
         steps += 1
         episode_reward += reward
         state = next_state
+    avg_energy_used = energy_used / steps
     eval_env.close()
-    return episode_reward
+    return episode_reward, avg_energy_used
 
 def evaluate_policy(policy_net, n_eval_episodes=5):
     """Evaluate the current policy without exploration using multiprocessing if enabled."""
@@ -83,18 +88,26 @@ def evaluate_policy(policy_net, n_eval_episodes=5):
         with Pool(processes=n_eval_episodes) as pool:
             # Each process runs a single evaluation episode
             results = pool.starmap(single_eval_episode, [(policy_net_state_dict, device) for _ in range(n_eval_episodes)])
-        avg_reward = np.mean(results)
     else:
-        total_rewards = []
-        for _ in range(n_eval_episodes):
-            total_rewards.append(single_eval_episode(policy_net_state_dict, device))
-        avg_reward = np.mean(total_rewards)
-        
-    print(f"Evaluation took {time.time() - t:.2f} seconds.")
-
+        results = [single_eval_episode(policy_net_state_dict, device) for _ in range(n_eval_episodes)]
+    
+    # Separate rewards and energy usage
+    total_rewards, total_energy_used = zip(*results)
+    
+    avg_reward = np.mean(total_rewards)
+    avg_energy_used = np.mean(total_energy_used)
+    
+    # Log aggregated values to TensorBoard
+    tb_writer.add_scalar("Eval/AvgReward", avg_reward, steps_done)
+    tb_writer.add_scalar("Eval/AvgEnergyUsedPerStep", avg_energy_used, steps_done)
+    
+    print(f"Evaluation took {time.time() - t:.2f} seconds. Avg Reward: {avg_reward:.3f}, Avg Energy Used: {avg_energy_used:.4f}")
+    
     return avg_reward
 
 def train_model(run_id: int = None, resume: bool = False):
+    global tb_writer, steps_done
+    
     base_env = ModifiedCartPoleEnv()
     env = NormalizedEnv(base_env)
     
@@ -119,7 +132,7 @@ def train_model(run_id: int = None, resume: bool = False):
     torch.manual_seed(SEED)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
+    
     # Initialize TensorBoard writer with run ID if available
     tb_comment = f"Cartpole_DQN_Run_{run_id}" if run_id is not None else "Cartpole_DQN_Resumed"
     tb_writer = SummaryWriter(log_dir=f"runs/cartpole_experiment_{run_id}", comment=tb_comment, flush_secs=30)
@@ -145,7 +158,7 @@ def train_model(run_id: int = None, resume: bool = False):
         return EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
 
     def select_action(state):
-        nonlocal steps_done
+        global steps_done
         eps_threshold = current_epsilon_threshold(steps_done)
         steps_done += 1
         if np.random.rand() < eps_threshold:
@@ -222,10 +235,13 @@ def train_model(run_id: int = None, resume: bool = False):
         while steps_done < MAX_STEPS:
             state, _ = env.reset(seed=random.randint(0, 100000))
             total_reward = 0
+            total_energy_used = 0
             for t in range(1, MAX_EPISODE_LENGTH):
                 action = select_action(state)
-                next_state, reward, done, _, _ = env.step(action)
+                next_state, reward, done, _, info = env.step(action)
                 total_reward += reward
+                total_energy_used += info.get("energy_used", 0)
+                
                 # memory.push(state, action, reward, next_state, done)
                 memory.add((
                     torch.tensor(state, dtype=torch.float32),
@@ -258,18 +274,21 @@ def train_model(run_id: int = None, resume: bool = False):
                 if steps_done % TARGET_UPDATE == 0:
                     target_net.load_state_dict(policy_net.state_dict())
 
-                if done:
-                    break
-                
                 # Periodic Evaluation
                 if steps_done % EVAL_INTERVAL == 0:
                     avg_reward = evaluate_policy(policy_net, n_eval_episodes=5)
-                    tb_writer.add_scalar("Eval/AvgReward", avg_reward, steps_done)
                     print(f"Evaluation at step {steps_done}: Avg Reward = {avg_reward:.3f}")
+                    
+                if done:
+                    break
+                
 
-            print(f"Episode {episode}, Total Reward: {total_reward:.3f}, Steps: {t}, Total steps: {steps_done}, Epsilon threshold: {current_epsilon_threshold(steps_done):.4f}")
+            avg_energy_used = total_energy_used / t
             tb_writer.add_scalar("Info/Reward", total_reward, steps_done)
             tb_writer.add_scalar("Info/Epsilon Threshold", current_epsilon_threshold(steps_done), steps_done)
+            tb_writer.add_scalar("Info/AvgEnergyUsedPerStep", avg_energy_used, steps_done)  # Log average energy used
+
+            print(f"Episode {episode}, Total Reward: {total_reward:.3f}, Steps: {t}, Total steps: {steps_done}, Epsilon threshold: {current_epsilon_threshold(steps_done):.4f}")
             
             episode += 1
     except KeyboardInterrupt:

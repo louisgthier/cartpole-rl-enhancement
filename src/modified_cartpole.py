@@ -51,24 +51,30 @@ class ModifiedCartPoleEnv(CartPoleEnv):
             or theta > self.theta_threshold_radians
         )
 
+        energy_used = abs(force)
+
         if not terminated:
             # Old reward function
             # reward = 0.0 if self._sutton_barto_reward else 1.0
             
-            # Modification: add a reward to minimize the distance to the center
-            # Reward for keeping the pole vertical
-            pole_angle_penalty = abs(theta) / self.theta_threshold_radians  # Normalized penalty for pole angle
-
-            # Reward for staying close to the center (no penalty if within 0.5 units of center)
+            # Calculate penalties for pole angle and center position
+            pole_angle_penalty = abs(theta) / self.theta_threshold_radians
             center_distance = abs(x)
             if center_distance <= 0.5:
                 center_penalty = 0.0
             else:
-                center_penalty = (center_distance - 0.5) / (self.x_threshold - 0.5)  # Normalized penalty beyond 0.5 units
+                center_penalty = (center_distance - 0.5) / (self.x_threshold - 0.5)
 
-            # Combine penalties into a reward (negative penalties)
-            reward = 1.0 - (pole_angle_penalty + center_penalty)
-            reward = max(reward, 0.0)  # Ensure reward is non-negative
+            # Base reward calculation for upright and centered state
+            base_reward = 1.0 - (pole_angle_penalty + center_penalty)
+            base_reward = max(base_reward, 0.0)
+
+            # Energy penalty based on the magnitude of the force applied
+            energy_coefficient = 0.01  # Tuning parameter for energy penalty
+            energy_penalty = energy_coefficient * energy_used
+
+            # Combine base reward with energy penalty
+            reward = max(base_reward - energy_penalty, 0.0)
         elif self.steps_beyond_terminated is None:
             # Pole just fell!
             self.steps_beyond_terminated = 0
@@ -90,5 +96,5 @@ class ModifiedCartPoleEnv(CartPoleEnv):
             self.render()
 
         # truncation=False as the time limit is handled by the `TimeLimit` wrapper added during `make`
-        return np.array(self.state, dtype=np.float32), reward, terminated, False, {}
+        return np.array(self.state, dtype=np.float32), reward, terminated, False, {"energy_used": energy_used}
     
