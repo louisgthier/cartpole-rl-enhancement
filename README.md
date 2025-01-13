@@ -1,5 +1,7 @@
 # CartPole RL Enhancement
 
+![CartPole RL Enhancement](https://gymnasium.farama.org/_images/cart_pole.gif)
+
 This repository contains a solution for an RL code challenge designed for an internship interview process. The project extends the classic CartPole environment from OpenAI Gym by adding a third action ("do nothing") and develops a deep reinforcement learning (RL) solution to handle this modified environment. The purpose of this exercise is to showcase understanding of RL components, environment modification, algorithm development, coding practices, and presentation skills.
 
 ## Table of Contents
