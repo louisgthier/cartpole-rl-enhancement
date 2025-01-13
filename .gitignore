@@ -178,3 +178,4 @@ repomix-output.txt
 /experiments/
 /backups/
 latex-build/
+.DS_Store
